@@ -23,6 +23,15 @@ const AudioTeacher: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const silenceDetectionRef = useRef<{
+    lastVolume: number;
+    silenceStart: number | null;
+    speaking: boolean;
+  }>({
+    lastVolume: 0,
+    silenceStart: null,
+    speaking: false
+  });
   
   const addLog = (message: string) => {
     const now = new Date();
@@ -67,20 +76,32 @@ const AudioTeacher: React.FC = () => {
       wsRef.current.onmessage = (event) => {
         try {
           addLog('Nhận phản hồi từ server');
-          console.log('Response:', event.data);
+          const data = event.data;
+          console.log('Response type:', typeof data);
           
+          // Kiểm tra nếu dữ liệu là Blob
+          if (data instanceof Blob) {
+            addLog('Nhận dữ liệu dạng Blob từ server');
+            // Xử lý dữ liệu Blob (ví dụ: âm thanh MP3)
+            playAudioFromBlob(data);
+            return;
+          }
+          
+          // Xử lý dữ liệu là string (JSON)
           try {
-            // Try to parse the response as JSON
-            const response = JSON.parse(event.data);
+            const response = JSON.parse(data);
+            console.log('Parsed response:', response);
             
-            // If the response contains audio data
+            // Nếu phản hồi có dữ liệu âm thanh
             if (response.type === 'audio' && response.data) {
               addLog('Nhận dữ liệu âm thanh từ server');
               playReceivedAudio(response.data, response.format || 'mp3');
             }
           } catch (parseError) {
-            addLog('Dữ liệu không phải JSON, xử lý như văn bản');
-            console.log('Text response:', event.data);
+            if (parseError instanceof Error) {
+              addLog('Dữ liệu không phải JSON, xử lý như văn bản: ' + parseError.message);
+              console.log('Text response:', data);
+            }
           }
         } catch (error) {
           if (error instanceof Error) {
@@ -104,6 +125,42 @@ const AudioTeacher: React.FC = () => {
     }
   };
 
+  // Play audio from Blob (for MP3)
+  const playAudioFromBlob = (audioBlob: Blob) => {
+    try {
+      const audioUrl = URL.createObjectURL(audioBlob);
+      
+      if (!audioPlayerRef.current) {
+        audioPlayerRef.current = new Audio();
+      }
+      
+      audioPlayerRef.current.src = audioUrl;
+      audioPlayerRef.current.onplay = () => {
+        setIsPlaying(true);
+        addLog('Đang phát âm thanh từ giáo viên');
+      };
+      audioPlayerRef.current.onended = () => {
+        setIsPlaying(false);
+        addLog('Kết thúc phát âm thanh');
+        URL.revokeObjectURL(audioUrl); // Giải phóng bộ nhớ
+      };
+      audioPlayerRef.current.onerror = (e) => {
+        setIsPlaying(false);
+        addLog('Lỗi phát âm thanh');
+      };
+      
+      audioPlayerRef.current.play().catch(error => {
+        if (error instanceof Error) {
+          addLog('Lỗi phát âm thanh: ' + error.message);
+        }
+      });
+    } catch (error) {
+      if (error instanceof Error) {
+        addLog('Lỗi xử lý âm thanh: ' + error.message);
+      }
+    }
+  };
+
   // Audio recording setup
   const setupAudioRecording = async () => {
     try {
@@ -121,8 +178,13 @@ const AudioTeacher: React.FC = () => {
       analyser.fftSize = 2048;
       source.connect(analyser);
       
-      // Set up media recorder
-      const mediaRecorder = new MediaRecorder(stream);
+      // Set up media recorder with appropriate MIME type
+      const options = { 
+        mimeType: 'audio/webm;codecs=opus', // Hỗ trợ tốt hơn cho web
+        audioBitsPerSecond: 128000 
+      };
+      
+      const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
       
@@ -130,27 +192,14 @@ const AudioTeacher: React.FC = () => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
           addLog(`Đã thu thập đoạn âm thanh: ${event.data.size} bytes`);
+          
+          // Gửi mỗi đoạn âm thanh đến WebSocket theo thời gian thực
+          processSpeechChunk(event.data);
         }
       };
       
-      mediaRecorder.onstop = () => {
-        addLog('MediaRecorder đã dừng, đang xử lý âm thanh...');
-        
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-        addLog(`Tạo blob âm thanh: ${audioBlob.size} bytes`);
-        
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (reader.result && typeof reader.result === 'string') {
-            const base64Audio = reader.result.split(',')[1];
-            sendAudioToServer(base64Audio);
-          }
-        };
-        reader.onerror = (e) => {
-          addLog('Lỗi đọc file: ' + (e.target?.error?.message || 'Unknown error'));
-        };
-        reader.readAsDataURL(audioBlob);
-      };
+      // Bắt đầu phát hiện âm lượng và khoảng lặng
+      startVolumeDetection();
       
       return true;
     } catch (error) {
@@ -165,33 +214,134 @@ const AudioTeacher: React.FC = () => {
       return false;
     }
   };
+  
+  // Phát hiện âm lượng và khoảng lặng
+  const startVolumeDetection = () => {
+    if (!analyserRef.current) return;
+    
+    const analyser = analyserRef.current;
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    const checkVolume = () => {
+      if (!isRecording) return;
+      
+      analyser.getByteTimeDomainData(dataArray);
+      
+      // Tính toán âm lượng trung bình
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        // Chuyển đổi dữ liệu byte sang giá trị từ -1 đến 1
+        const val = ((dataArray[i] / 128.0) - 1.0);
+        // Lấy giá trị tuyệt đối để có biên độ
+        sum += Math.abs(val);
+      }
+      const avgVolume = sum / bufferLength;
+      
+      const silenceThreshold = 0.05; // Ngưỡng của sự im lặng
+      const silenceTime = 1000; // Thời gian im lặng (ms) để coi là hết câu
+      
+      const now = performance.now();
+      
+      // Phát hiện khi người dùng bắt đầu nói
+      if (avgVolume > silenceThreshold && !silenceDetectionRef.current.speaking) {
+        silenceDetectionRef.current.speaking = true;
+        silenceDetectionRef.current.silenceStart = null;
+        addLog('Bắt đầu phát hiện giọng nói');
+      } 
+      // Phát hiện khi người dùng ngừng nói
+      else if (avgVolume <= silenceThreshold && silenceDetectionRef.current.speaking) {
+        if (!silenceDetectionRef.current.silenceStart) {
+          silenceDetectionRef.current.silenceStart = now;
+        } 
+        // Nếu im lặng đủ lâu, coi như đã kết thúc một câu nói
+        else if (now - silenceDetectionRef.current.silenceStart > silenceTime) {
+          silenceDetectionRef.current.speaking = false;
+          addLog('Phát hiện kết thúc câu nói');
+          
+          // Nếu có đủ dữ liệu, gửi đoạn âm thanh đã thu thập
+          if (audioChunksRef.current.length > 0) {
+            sendCollectedAudio();
+          }
+        }
+      } 
+      // Nếu tiếp tục nói, đặt lại thời gian im lặng
+      else if (avgVolume > silenceThreshold) {
+        silenceDetectionRef.current.silenceStart = null;
+      }
+      
+      silenceDetectionRef.current.lastVolume = avgVolume;
+      
+      // Tiếp tục kiểm tra
+      requestAnimationFrame(checkVolume);
+    };
+    
+    checkVolume();
+  };
+
+  // Xử lý mỗi đoạn âm thanh được thu thập
+  const processSpeechChunk = (chunk: Blob) => {
+    if (silenceDetectionRef.current.speaking) {
+      // Nếu đang nói, chỉ thu thập dữ liệu và chờ khoảng lặng
+      return;
+    }
+    
+    // Nếu không phải đang nói, gửi dữ liệu đã thu thập
+    const blob = new Blob([chunk], { type: chunk.type });
+    sendAudioToServer(blob);
+  };
+
+  // Send collected audio to server
+  const sendCollectedAudio = () => {
+    if (audioChunksRef.current.length === 0) return;
+    
+    const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+    addLog(`Chuẩn bị gửi âm thanh đã thu thập: ${audioBlob.size} bytes`);
+    sendAudioToServer(audioBlob);
+    
+    // Xóa các audio chunks đã gửi
+    audioChunksRef.current = [];
+  };
 
   // Send audio to server
-  const sendAudioToServer = (base64Audio: string) => {
+  const sendAudioToServer = (audioBlob: Blob) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      const message = {
-        type: 'audio',
-        data: base64Audio,
-        format: 'wav',
-        timestamp: new Date().toISOString()
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (reader.result && typeof reader.result === 'string') {
+          const base64Audio = reader.result.split(',')[1];
+          
+          const message = {
+            type: 'audio',
+            data: base64Audio,
+            format: 'webm', // Định dạng âm thanh của browser
+            timestamp: new Date().toISOString(),
+            expectResponseFormat: 'mp3' // Yêu cầu phản hồi dạng MP3
+          };
+          
+          try {
+            const jsonString = JSON.stringify(message);
+            wsRef.current?.send(jsonString);
+            addLog(`Đã gửi dữ liệu âm thanh (${base64Audio.length} ký tự)`);
+          } catch (error) {
+            if (error instanceof Error) {
+              addLog('Lỗi khi gửi âm thanh: ' + error.message);
+            }
+          }
+        }
       };
       
-      try {
-        const jsonString = JSON.stringify(message);
-        wsRef.current.send(jsonString);
-        addLog(`Đã gửi dữ liệu âm thanh (${base64Audio.length} characters)`);
-      } catch (error) {
-        if (error instanceof Error) {
-          addLog('Lỗi khi gửi âm thanh: ' + error.message);
+      reader.onerror = (e) => {
+        if (e.target?.error?.message) {
+          addLog('Lỗi đọc file: ' + e.target.error.message);
+        } else {
+          addLog('Lỗi đọc file không xác định');
         }
-      }
+      };
+      
+      reader.readAsDataURL(audioBlob);
     } else {
       addLog('Không thể gửi âm thanh: WebSocket không được kết nối');
-      toast({
-        title: "Lỗi gửi âm thanh",
-        description: "WebSocket không được kết nối",
-        variant: "destructive",
-      });
     }
   };
 
@@ -230,6 +380,7 @@ const AudioTeacher: React.FC = () => {
       audioPlayerRef.current.onended = () => {
         setIsPlaying(false);
         addLog('Kết thúc phát âm thanh');
+        URL.revokeObjectURL(audioUrl); // Giải phóng bộ nhớ
       };
       audioPlayerRef.current.onerror = (e) => {
         setIsPlaying(false);
@@ -237,7 +388,9 @@ const AudioTeacher: React.FC = () => {
       };
       
       audioPlayerRef.current.play().catch(error => {
-        addLog('Lỗi phát âm thanh: ' + error.message);
+        if (error instanceof Error) {
+          addLog('Lỗi phát âm thanh: ' + error.message);
+        }
       });
     } catch (error) {
       if (error instanceof Error) {
@@ -262,10 +415,17 @@ const AudioTeacher: React.FC = () => {
       // Clear previous audio chunks
       audioChunksRef.current = [];
       
-      // Start recording with 1 second intervals
-      mediaRecorderRef.current.start(1000);
+      // Reset silence detection
+      silenceDetectionRef.current = {
+        lastVolume: 0,
+        silenceStart: null,
+        speaking: false
+      };
+      
+      // Start recording with short intervals for real-time transmission
+      mediaRecorderRef.current.start(500); // Thu âm mỗi 500ms
       setIsRecording(true);
-      addLog('Bắt đầu ghi âm');
+      addLog('Bắt đầu ghi âm real-time');
       startVisualizing();
     }
   };
@@ -275,8 +435,13 @@ const AudioTeacher: React.FC = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      addLog('Dừng ghi âm và gửi dữ liệu');
+      addLog('Dừng ghi âm');
       stopVisualizing();
+      
+      // Gửi các đoạn âm thanh còn lại nếu có
+      if (audioChunksRef.current.length > 0) {
+        sendCollectedAudio();
+      }
     }
   };
 
@@ -410,12 +575,18 @@ const AudioTeacher: React.FC = () => {
           </div>
           
           {isRecording && (
-            <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
+            <div className="flex items-center px-3 py-1 rounded-full bg-red-100 text-red-800 text-sm">
+              <Mic className="w-4 h-4 mr-1 animate-pulse" />
+              <span>Đang ghi âm</span>
+              {silenceDetectionRef.current?.speaking && (
+                <span className="ml-1 w-2 h-2 bg-red-500 rounded-full animate-ping"></span>
+              )}
+            </div>
           )}
           
           {isPlaying && (
             <div className="flex items-center px-3 py-1 rounded-full bg-blue-100 text-blue-800 text-sm">
-              <Volume2 className="w-4 h-4 mr-1" />
+              <Volume2 className="w-4 h-4 mr-1 animate-pulse" />
               <span>Đang phát</span>
             </div>
           )}
