@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { useToast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ const AudioTeacher: React.FC = () => {
   const animationFrameRef = useRef<number | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   
   const addLog = (message: string) => {
     const now = new Date();
@@ -29,11 +31,17 @@ const AudioTeacher: React.FC = () => {
       time: timestamp,
       message
     }, ...prevLogs].slice(0, 100)); // Keep only the last 100 logs
+    console.log(`[${timestamp}] ${message}`);
   };
 
   // Handle WebSocket connection
   const connectWebSocket = () => {
     try {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        addLog('WebSocket đã được kết nối');
+        return;
+      }
+      
       wsRef.current = new WebSocket('wss://ws.thanhpn.online:3001');
       
       wsRef.current.onopen = () => {
@@ -61,12 +69,18 @@ const AudioTeacher: React.FC = () => {
           addLog('Nhận phản hồi từ server');
           console.log('Response:', event.data);
           
-          // Try to parse the response as JSON
-          const response = JSON.parse(event.data);
-          
-          // If the response contains audio data
-          if (response.type === 'audio' && response.data) {
-            playReceivedAudio(response.data, response.format || 'mp3');
+          try {
+            // Try to parse the response as JSON
+            const response = JSON.parse(event.data);
+            
+            // If the response contains audio data
+            if (response.type === 'audio' && response.data) {
+              addLog('Nhận dữ liệu âm thanh từ server');
+              playReceivedAudio(response.data, response.format || 'mp3');
+            }
+          } catch (parseError) {
+            addLog('Dữ liệu không phải JSON, xử lý như văn bản');
+            console.log('Text response:', event.data);
           }
         } catch (error) {
           if (error instanceof Error) {
@@ -94,6 +108,7 @@ const AudioTeacher: React.FC = () => {
   const setupAudioRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
       
       // Set up audio context and analyser
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -112,12 +127,17 @@ const AudioTeacher: React.FC = () => {
       audioChunksRef.current = [];
       
       mediaRecorder.ondataavailable = (event) => {
-        audioChunksRef.current.push(event.data);
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+          addLog(`Đã thu thập đoạn âm thanh: ${event.data.size} bytes`);
+        }
       };
       
       mediaRecorder.onstop = () => {
+        addLog('MediaRecorder đã dừng, đang xử lý âm thanh...');
+        
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-        audioChunksRef.current = [];
+        addLog(`Tạo blob âm thanh: ${audioBlob.size} bytes`);
         
         const reader = new FileReader();
         reader.onload = () => {
@@ -125,6 +145,9 @@ const AudioTeacher: React.FC = () => {
             const base64Audio = reader.result.split(',')[1];
             sendAudioToServer(base64Audio);
           }
+        };
+        reader.onerror = (e) => {
+          addLog('Lỗi đọc file: ' + (e.target?.error?.message || 'Unknown error'));
         };
         reader.readAsDataURL(audioBlob);
       };
@@ -152,8 +175,16 @@ const AudioTeacher: React.FC = () => {
         format: 'wav',
         timestamp: new Date().toISOString()
       };
-      wsRef.current.send(JSON.stringify(message));
-      addLog('Đã gửi dữ liệu âm thanh');
+      
+      try {
+        const jsonString = JSON.stringify(message);
+        wsRef.current.send(jsonString);
+        addLog(`Đã gửi dữ liệu âm thanh (${base64Audio.length} characters)`);
+      } catch (error) {
+        if (error instanceof Error) {
+          addLog('Lỗi khi gửi âm thanh: ' + error.message);
+        }
+      }
     } else {
       addLog('Không thể gửi âm thanh: WebSocket không được kết nối');
       toast({
@@ -228,6 +259,10 @@ const AudioTeacher: React.FC = () => {
     
     const isSetup = await setupAudioRecording();
     if (isSetup && mediaRecorderRef.current) {
+      // Clear previous audio chunks
+      audioChunksRef.current = [];
+      
+      // Start recording with 1 second intervals
       mediaRecorderRef.current.start(1000);
       setIsRecording(true);
       addLog('Bắt đầu ghi âm');
@@ -240,7 +275,7 @@ const AudioTeacher: React.FC = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      addLog('Dừng ghi âm');
+      addLog('Dừng ghi âm và gửi dữ liệu');
       stopVisualizing();
     }
   };
@@ -324,8 +359,12 @@ const AudioTeacher: React.FC = () => {
     };
   }, []);
 
-  // Clean up when component unmounts
+  // Connect to WebSocket when component mounts
   useEffect(() => {
+    // Auto-connect on component mount
+    connectWebSocket();
+    
+    // Clean up when component unmounts
     return () => {
       if (wsRef.current) {
         wsRef.current.close();
@@ -335,6 +374,9 @@ const AudioTeacher: React.FC = () => {
       }
       if (audioPlayerRef.current) {
         audioPlayerRef.current.pause();
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
   }, []);
