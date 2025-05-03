@@ -1,9 +1,8 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { useToast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Mic, MicOff, Play, Stop, Wifi, WifiOff, Volume2 } from 'lucide-react';
+import { Mic, MicOff, Play, Square, Wifi, WifiOff, Volume2 } from 'lucide-react';
 import { cn } from "@/lib/utils";
 
 const AudioTeacher: React.FC = () => {
@@ -398,7 +397,7 @@ const AudioTeacher: React.FC = () => {
           >
             {isRecording ? (
               <>
-                <Stop className="mr-2 h-4 w-4" /> Dừng ghi âm
+                <Square className="mr-2 h-4 w-4" /> Dừng ghi âm
               </>
             ) : (
               <>
