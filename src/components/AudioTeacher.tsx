@@ -3,8 +3,12 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Mic, MicOff, Play, Square, Wifi, WifiOff, Volume2 } from 'lucide-react';
+import { Mic, Square, Wifi, WifiOff, Volume2 } from 'lucide-react';
 import { cn } from "@/lib/utils";
+import AudioVisualizer from './AudioVisualizer';
+import StatusIndicators from './StatusIndicators';
+import AudioControls from './AudioControls';
+import LogDisplay from './LogDisplay';
 
 const AudioTeacher: React.FC = () => {
   const { toast } = useToast();
@@ -110,7 +114,7 @@ const AudioTeacher: React.FC = () => {
         }
       };
       
-      wsRef.current.onerror = (error) => {
+      wsRef.current.onerror = () => {
         addLog('Lỗi WebSocket');
         toast({
           title: "Lỗi kết nối",
@@ -144,7 +148,7 @@ const AudioTeacher: React.FC = () => {
         addLog('Kết thúc phát âm thanh');
         URL.revokeObjectURL(audioUrl); // Giải phóng bộ nhớ
       };
-      audioPlayerRef.current.onerror = (e) => {
+      audioPlayerRef.current.onerror = () => {
         setIsPlaying(false);
         addLog('Lỗi phát âm thanh');
       };
@@ -164,10 +168,43 @@ const AudioTeacher: React.FC = () => {
   // Audio recording setup
   const setupAudioRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Kiểm tra hỗ trợ MediaRecorder và định dạng audio/webm
+      if (!window.MediaRecorder) {
+        throw new Error("Trình duyệt không hỗ trợ MediaRecorder API");
+      }
+      
+      // Kiểm tra các định dạng được hỗ trợ
+      let mimeType = '';
+      const supportedMimeTypes = [
+        'audio/webm;codecs=opus', 
+        'audio/webm', 
+        'audio/webm;codecs=vorbis'
+      ];
+      
+      for (const type of supportedMimeTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          addLog(`Sử dụng định dạng: ${type}`);
+          break;
+        }
+      }
+      
+      if (!mimeType) {
+        addLog('Cảnh báo: Không có định dạng webm nào được hỗ trợ. Sử dụng định dạng mặc định.');
+      }
+      
+      // Yêu cầu quyền truy cập microphone với giá trị echoCancellation
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
+      
       streamRef.current = stream;
       
-      // Set up audio context and analyser
+      // Set up audio context và analyser
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       audioContextRef.current = audioContext;
       
@@ -178,20 +215,23 @@ const AudioTeacher: React.FC = () => {
       analyser.fftSize = 2048;
       source.connect(analyser);
       
-      // Set up media recorder with appropriate MIME type
-      const options = { 
-        mimeType: 'audio/webm;codecs=opus', // Hỗ trợ tốt hơn cho web
+      // Thiết lập MediaRecorder với MIME type phù hợp
+      const options: MediaRecorderOptions = { 
         audioBitsPerSecond: 128000 
       };
+      
+      if (mimeType) {
+        options.mimeType = mimeType;
+      }
       
       const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
       
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+        if (event.data && event.data.size > 0) {
           audioChunksRef.current.push(event.data);
-          addLog(`Đã thu thập đoạn âm thanh: ${event.data.size} bytes`);
+          addLog(`Đã thu thập đoạn âm thanh: ${event.data.size} bytes - Type: ${event.data.type}`);
           
           // Gửi mỗi đoạn âm thanh đến WebSocket theo thời gian thực
           processSpeechChunk(event.data);
@@ -287,7 +327,8 @@ const AudioTeacher: React.FC = () => {
     }
     
     // Nếu không phải đang nói, gửi dữ liệu đã thu thập
-    const blob = new Blob([chunk], { type: chunk.type });
+    // Đảm bảo rằng chunk vẫn là định dạng .webm
+    const blob = new Blob([chunk], { type: chunk.type || 'audio/webm' });
     sendAudioToServer(blob);
   };
 
@@ -295,8 +336,9 @@ const AudioTeacher: React.FC = () => {
   const sendCollectedAudio = () => {
     if (audioChunksRef.current.length === 0) return;
     
+    // Đảm bảo rằng type luôn là audio/webm
     const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-    addLog(`Chuẩn bị gửi âm thanh đã thu thập: ${audioBlob.size} bytes`);
+    addLog(`Chuẩn bị gửi âm thanh đã thu thập: ${audioBlob.size} bytes - Type: ${audioBlob.type}`);
     sendAudioToServer(audioBlob);
     
     // Xóa các audio chunks đã gửi
@@ -314,7 +356,7 @@ const AudioTeacher: React.FC = () => {
           const message = {
             type: 'audio',
             data: base64Audio,
-            format: 'webm', // Định dạng âm thanh của browser
+            format: 'webm', // Luôn chỉ định định dạng là webm
             timestamp: new Date().toISOString(),
             expectResponseFormat: 'mp3' // Yêu cầu phản hồi dạng MP3
           };
@@ -382,7 +424,7 @@ const AudioTeacher: React.FC = () => {
         addLog('Kết thúc phát âm thanh');
         URL.revokeObjectURL(audioUrl); // Giải phóng bộ nhớ
       };
-      audioPlayerRef.current.onerror = (e) => {
+      audioPlayerRef.current.onerror = () => {
         setIsPlaying(false);
         addLog('Lỗi phát âm thanh');
       };
@@ -556,93 +598,26 @@ const AudioTeacher: React.FC = () => {
       
       <CardContent className="p-6">
         {/* Connection Status */}
-        <div className="flex justify-center items-center space-x-2 mb-6">
-          <div className={cn(
-            "px-3 py-1 rounded-full flex items-center justify-center text-sm font-medium",
-            isConnected ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
-          )}>
-            {isConnected ? (
-              <>
-                <Wifi className="w-4 h-4 mr-1" />
-                <span>Đã kết nối</span>
-              </>
-            ) : (
-              <>
-                <WifiOff className="w-4 h-4 mr-1" />
-                <span>Chưa kết nối</span>
-              </>
-            )}
-          </div>
-          
-          {isRecording && (
-            <div className="flex items-center px-3 py-1 rounded-full bg-red-100 text-red-800 text-sm">
-              <Mic className="w-4 h-4 mr-1 animate-pulse" />
-              <span>Đang ghi âm</span>
-              {silenceDetectionRef.current?.speaking && (
-                <span className="ml-1 w-2 h-2 bg-red-500 rounded-full animate-ping"></span>
-              )}
-            </div>
-          )}
-          
-          {isPlaying && (
-            <div className="flex items-center px-3 py-1 rounded-full bg-blue-100 text-blue-800 text-sm">
-              <Volume2 className="w-4 h-4 mr-1 animate-pulse" />
-              <span>Đang phát</span>
-            </div>
-          )}
-        </div>
+        <StatusIndicators 
+          isConnected={isConnected}
+          isRecording={isRecording}
+          isPlaying={isPlaying}
+          isSpeaking={silenceDetectionRef.current?.speaking || false}
+        />
         
         {/* Controls */}
-        <div className="flex justify-center space-x-4 mb-8">
-          <Button
-            onClick={connectWebSocket}
-            disabled={isConnected}
-            className="bg-teacher-primary hover:bg-teacher-dark"
-          >
-            {isConnected ? <Wifi className="mr-2 h-4 w-4" /> : <WifiOff className="mr-2 h-4 w-4" />}
-            Kết nối
-          </Button>
-          
-          <Button
-            onClick={toggleRecording}
-            disabled={!isConnected}
-            className={isRecording ? "bg-red-500 hover:bg-red-600" : "bg-green-500 hover:bg-green-600"}
-          >
-            {isRecording ? (
-              <>
-                <Square className="mr-2 h-4 w-4" /> Dừng ghi âm
-              </>
-            ) : (
-              <>
-                <Mic className="mr-2 h-4 w-4" /> Ghi âm
-              </>
-            )}
-          </Button>
-        </div>
+        <AudioControls
+          isConnected={isConnected}
+          isRecording={isRecording}
+          connectWebSocket={connectWebSocket}
+          toggleRecording={toggleRecording}
+        />
         
         {/* Audio Visualization */}
-        <div className="mb-6 bg-sky-50 rounded-md p-1">
-          <canvas 
-            ref={canvasRef} 
-            height={100} 
-            className="w-full rounded" 
-          />
-        </div>
+        <AudioVisualizer canvasRef={canvasRef} />
         
         {/* Logs */}
-        <div className="border rounded-md h-48 overflow-y-auto p-2 bg-gray-50 text-sm">
-          {logs.map((log, index) => (
-            <div key={index} className="log-entry mb-1 border-b border-gray-100 pb-1">
-              <span className="text-gray-500 mr-2">[{log.time}]</span>
-              <span>{log.message}</span>
-            </div>
-          ))}
-          {logs.length === 0 && (
-            <div className="text-gray-400 italic text-center mt-4">
-              Chưa có logs
-            </div>
-          )}
-        </div>
+        <LogDisplay logs={logs} />
       </CardContent>
     </Card>
   );
