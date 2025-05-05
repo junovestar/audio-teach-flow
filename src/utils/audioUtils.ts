@@ -17,7 +17,17 @@ export const playAudioFromBlob = (
   onPlaybackEnd?: () => void
 ) => {
   try {
-    const audioUrl = URL.createObjectURL(audioBlob);
+    // Ghi log thông tin về blob để debug
+    addLog(`Xử lý audio blob: type=${audioBlob.type || 'unknown'}, size=${audioBlob.size} bytes`);
+    
+    // Nếu không có MIME type hoặc không hợp lệ, thử dùng audio/mpeg
+    let processedBlob = audioBlob;
+    if (!audioBlob.type || audioBlob.type === 'unknown') {
+      processedBlob = new Blob([audioBlob], { type: 'audio/mpeg' });
+      addLog('Đã gán MIME type audio/mpeg cho blob không có type');
+    }
+    
+    const audioUrl = URL.createObjectURL(processedBlob);
     
     if (!audioPlayerRef.current) {
       audioPlayerRef.current = new Audio();
@@ -38,9 +48,21 @@ export const playAudioFromBlob = (
         onPlaybackEnd();
       }
     };
-    audioPlayerRef.current.onerror = () => {
+    audioPlayerRef.current.onerror = (e) => {
+      const error = e as ErrorEvent;
       setIsPlaying(false);
-      addLog('Lỗi phát âm thanh');
+      
+      // Thử phát lại với một MIME type khác nếu lỗi
+      const errorMsg = error.message || audioPlayerRef.current?.error?.message || 'Không rõ lỗi';
+      addLog(`Lỗi phát âm thanh: ${errorMsg}`);
+      
+      // Có thể thử lại với một MIME type khác
+      if (processedBlob.type !== 'audio/mpeg' && processedBlob.type !== audioBlob.type) {
+        addLog('Thử lại phát âm thanh với MIME type khác: audio/mpeg');
+        playAudioFromBlob(new Blob([audioBlob], { type: 'audio/mpeg' }), 
+                          audioPlayerRef, setIsPlaying, addLog, onPlaybackEnd);
+        return;
+      }
       
       // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
       if (onPlaybackEnd) {
@@ -51,6 +73,15 @@ export const playAudioFromBlob = (
     audioPlayerRef.current.play().catch(error => {
       if (error instanceof Error) {
         addLog('Lỗi phát âm thanh: ' + error.message);
+        
+        // Thử phát lại với một MIME type khác
+        if (processedBlob.type !== 'audio/mpeg') {
+          addLog('Thử lại phát âm thanh với MIME type: audio/mpeg');
+          const mpegBlob = new Blob([audioBlob], { type: 'audio/mpeg' });
+          playAudioFromBlob(mpegBlob, audioPlayerRef, setIsPlaying, addLog, onPlaybackEnd);
+          return;
+        }
+        
         // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
         if (onPlaybackEnd) {
           onPlaybackEnd();
@@ -60,6 +91,7 @@ export const playAudioFromBlob = (
   } catch (error) {
     if (error instanceof Error) {
       addLog('Lỗi xử lý âm thanh: ' + error.message);
+      
       // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
       if (onPlaybackEnd) {
         onPlaybackEnd();

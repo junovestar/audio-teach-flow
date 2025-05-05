@@ -128,7 +128,16 @@ export const playReceivedAudio = (
       byteArrays.push(byteArray);
     }
     
-    const blob = new Blob(byteArrays, { type: `audio/${format}` });
+    // Đảm bảo đúng format MIME
+    let mimeType = `audio/${format}`;
+    // Đảm bảo format MP3 luôn được sử dụng chính xác
+    if (format === 'mp3') {
+      mimeType = 'audio/mpeg';
+    }
+    
+    const blob = new Blob(byteArrays, { type: mimeType });
+    addLog(`Đã tạo audio blob với MIME type: ${mimeType}, kích thước: ${blob.size} bytes`);
+    
     const audioUrl = URL.createObjectURL(blob);
     
     // Create or use existing audio element
@@ -151,9 +160,10 @@ export const playReceivedAudio = (
         onPlaybackEnd();
       }
     };
-    audioPlayerRef.current.onerror = () => {
+    audioPlayerRef.current.onerror = (e) => {
+      const error = e as ErrorEvent;
       setIsPlaying(false);
-      addLog('Lỗi phát âm thanh');
+      addLog(`Lỗi phát âm thanh: ${error.message || 'Không rõ lỗi'}`);
       
       // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
       if (onPlaybackEnd) {

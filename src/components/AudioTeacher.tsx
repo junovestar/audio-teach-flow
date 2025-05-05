@@ -107,11 +107,20 @@ const AudioTeacher: React.FC = () => {
       
       // Kiểm tra nếu dữ liệu là Blob
       if (data instanceof Blob) {
-        addLog('Nhận dữ liệu dạng Blob từ server');
+        const blobType = data.type || 'unknown';
+        const blobSize = data.size;
+        addLog(`Nhận dữ liệu dạng Blob từ server: type=${blobType}, size=${blobSize} bytes`);
+        
+        // Nếu blob không có type hoặc type không hợp lệ, thử xử lý như MP3
+        const processedBlob = blobType === 'unknown' || !blobType 
+          ? new Blob([data], { type: 'audio/mpeg' })
+          : data;
+          
         // Tạm dừng ghi âm trước khi phát
         pauseRecording();
+        
         // Xử lý dữ liệu Blob (ví dụ: âm thanh MP3)
-        playAudioFromBlob(data, audioPlayerRef, setIsPlaying, addLog, resumeRecording);
+        playAudioFromBlob(processedBlob, audioPlayerRef, setIsPlaying, addLog, resumeRecording);
         return;
       }
       
@@ -122,7 +131,8 @@ const AudioTeacher: React.FC = () => {
         
         // Nếu phản hồi có dữ liệu âm thanh
         if (response.type === 'audio' && response.data) {
-          addLog('Nhận dữ liệu âm thanh từ server');
+          addLog(`Nhận dữ liệu âm thanh từ server: format=${response.format || 'mp3'}`);
+          
           // Tạm dừng ghi âm trước khi phát
           pauseRecording();
           playReceivedAudio(response.data, response.format || 'mp3', audioPlayerRef, setIsPlaying, addLog, resumeRecording);
