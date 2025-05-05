@@ -13,7 +13,8 @@ export const playAudioFromBlob = (
   audioBlob: Blob,
   audioPlayerRef: React.MutableRefObject<HTMLAudioElement | null>,
   setIsPlaying: (isPlaying: boolean) => void,
-  addLog: (message: string) => void
+  addLog: (message: string) => void,
+  onPlaybackEnd?: () => void
 ) => {
   try {
     const audioUrl = URL.createObjectURL(audioBlob);
@@ -31,20 +32,38 @@ export const playAudioFromBlob = (
       setIsPlaying(false);
       addLog('Kết thúc phát âm thanh');
       URL.revokeObjectURL(audioUrl); // Giải phóng bộ nhớ
+      
+      // Gọi callback khi kết thúc phát âm thanh
+      if (onPlaybackEnd) {
+        onPlaybackEnd();
+      }
     };
     audioPlayerRef.current.onerror = () => {
       setIsPlaying(false);
       addLog('Lỗi phát âm thanh');
+      
+      // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
+      if (onPlaybackEnd) {
+        onPlaybackEnd();
+      }
     };
     
     audioPlayerRef.current.play().catch(error => {
       if (error instanceof Error) {
         addLog('Lỗi phát âm thanh: ' + error.message);
+        // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
+        if (onPlaybackEnd) {
+          onPlaybackEnd();
+        }
       }
     });
   } catch (error) {
     if (error instanceof Error) {
       addLog('Lỗi xử lý âm thanh: ' + error.message);
+      // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
+      if (onPlaybackEnd) {
+        onPlaybackEnd();
+      }
     }
   }
 };
