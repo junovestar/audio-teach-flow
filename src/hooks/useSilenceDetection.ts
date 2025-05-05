@@ -1,10 +1,11 @@
 
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 
 interface SilenceDetection {
   lastVolume: number;
   silenceStart: number | null;
   speaking: boolean;
+  sentenceDetected: boolean;
 }
 
 export function useSilenceDetection(
@@ -16,7 +17,8 @@ export function useSilenceDetection(
   const silenceDetectionRef = useRef<SilenceDetection>({
     lastVolume: 0,
     silenceStart: null,
-    speaking: false
+    speaking: false,
+    sentenceDetected: false
   });
 
   // Phát hiện âm lượng và khoảng lặng
@@ -51,6 +53,7 @@ export function useSilenceDetection(
       if (avgVolume > silenceThreshold && !silenceDetectionRef.current.speaking) {
         silenceDetectionRef.current.speaking = true;
         silenceDetectionRef.current.silenceStart = null;
+        silenceDetectionRef.current.sentenceDetected = false;
         addLog('Bắt đầu phát hiện giọng nói');
       } 
       // Phát hiện khi người dùng ngừng nói
@@ -61,6 +64,7 @@ export function useSilenceDetection(
         // Nếu im lặng đủ lâu, coi như đã kết thúc một câu nói
         else if (now - silenceDetectionRef.current.silenceStart > silenceTime) {
           silenceDetectionRef.current.speaking = false;
+          silenceDetectionRef.current.sentenceDetected = true;
           addLog('Phát hiện kết thúc câu nói');
           
           // Gửi các đoạn âm thanh đã thu thập
@@ -74,12 +78,23 @@ export function useSilenceDetection(
       
       silenceDetectionRef.current.lastVolume = avgVolume;
       
-      // Tiếp tục kiểm tra
+      // Tiếp tục kiểm tra - realtime liên tục
       requestAnimationFrame(checkVolume);
     };
     
     checkVolume();
   };
+
+  // Khởi động phát hiện khi bắt đầu ghi âm
+  useEffect(() => {
+    if (isRecording) {
+      startVolumeDetection();
+    }
+    
+    return () => {
+      // Không cần dọn dẹp, sẽ tự kết thúc khi isRecording = false
+    };
+  }, [isRecording]);
 
   return { silenceDetectionRef, startVolumeDetection };
 }

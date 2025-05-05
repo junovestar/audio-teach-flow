@@ -5,6 +5,7 @@ interface SilenceDetection {
   lastVolume: number;
   silenceStart: number | null;
   speaking: boolean;
+  sentenceDetected: boolean;
 }
 
 // Play audio from Blob (for MP3)
@@ -48,7 +49,7 @@ export const playAudioFromBlob = (
   }
 };
 
-// Setup audio recording
+// Setup audio recording với phát hiện realtime
 export const setupAudioRecording = async (
   streamRef: React.MutableRefObject<MediaStream | null>,
   audioContextRef: React.MutableRefObject<AudioContext | null>,
@@ -61,10 +62,43 @@ export const setupAudioRecording = async (
   startVolumeDetection: () => void
 ): Promise<boolean> => {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Kiểm tra hỗ trợ MediaRecorder và định dạng audio/webm
+    if (!window.MediaRecorder) {
+      throw new Error("Trình duyệt không hỗ trợ MediaRecorder API");
+    }
+    
+    // Kiểm tra các định dạng được hỗ trợ
+    let mimeType = '';
+    const supportedMimeTypes = [
+      'audio/webm;codecs=opus', 
+      'audio/webm', 
+      'audio/webm;codecs=vorbis'
+    ];
+    
+    for (const type of supportedMimeTypes) {
+      if (MediaRecorder.isTypeSupported(type)) {
+        mimeType = type;
+        addLog(`Sử dụng định dạng: ${type}`);
+        break;
+      }
+    }
+    
+    if (!mimeType) {
+      addLog('Cảnh báo: Không có định dạng webm nào được hỗ trợ. Sử dụng định dạng mặc định.');
+    }
+    
+    // Yêu cầu quyền truy cập microphone với giá trị echoCancellation
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      } 
+    });
+    
     streamRef.current = stream;
     
-    // Set up audio context and analyser
+    // Set up audio context và analyser
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     audioContextRef.current = audioContext;
     
@@ -75,23 +109,24 @@ export const setupAudioRecording = async (
     analyser.fftSize = 2048;
     source.connect(analyser);
     
-    // Set up media recorder with appropriate MIME type
-    const options = { 
-      mimeType: 'audio/webm;codecs=opus', // Hỗ trợ tốt hơn cho web
+    // Thiết lập MediaRecorder với MIME type phù hợp
+    const options: MediaRecorderOptions = { 
       audioBitsPerSecond: 128000 
     };
+    
+    if (mimeType) {
+      options.mimeType = mimeType;
+    }
     
     const mediaRecorder = new MediaRecorder(stream, options);
     mediaRecorderRef.current = mediaRecorder;
     audioChunksRef.current = [];
     
+    // Cài đặt xử lý dữ liệu âm thanh realtime
     mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
+      if (event.data && event.data.size > 0) {
         audioChunksRef.current.push(event.data);
-        addLog(`Đã thu thập đoạn âm thanh: ${event.data.size} bytes`);
-        
-        // Gửi mỗi đoạn âm thanh đến WebSocket theo thời gian thực
-        processSpeechChunk(event.data);
+        addLog(`Đã thu thập đoạn âm thanh: ${event.data.size} bytes - Type: ${event.data.type}`);
       }
     };
     
@@ -112,24 +147,19 @@ export const setupAudioRecording = async (
   }
 };
 
-// Process speech chunks
+// Process speech chunks - phát hiện kết thúc câu nói
 export const createProcessSpeechChunk = (
   silenceDetectionRef: React.MutableRefObject<SilenceDetection>,
   sendAudioToServer: (audioBlob: Blob) => void
 ) => {
   return (chunk: Blob) => {
-    if (silenceDetectionRef.current.speaking) {
-      // Nếu đang nói, chỉ thu thập dữ liệu và chờ khoảng lặng
-      return;
-    }
-    
-    // Nếu không phải đang nói, gửi dữ liệu đã thu thập
-    const blob = new Blob([chunk], { type: chunk.type });
-    sendAudioToServer(blob);
+    // Trong chế độ realtime, chúng ta gửi dữ liệu khi phát hiện kết thúc câu
+    // Dữ liệu sẽ được thu thập và xử lý trong sendCollectedAudio
+    return;
   };
 };
 
-// Send collected audio to server
+// Send collected audio to server - khi phát hiện kết thúc một câu
 export const createSendCollectedAudio = (
   audioChunksRef: React.MutableRefObject<Blob[]>,
   addLog: (message: string) => void,
@@ -138,11 +168,12 @@ export const createSendCollectedAudio = (
   return () => {
     if (audioChunksRef.current.length === 0) return;
     
+    // Tạo blob từ các phần audio đã thu thập
     const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-    addLog(`Chuẩn bị gửi âm thanh đã thu thập: ${audioBlob.size} bytes`);
+    addLog(`Chuẩn bị gửi câu nói đã thu thập: ${audioBlob.size} bytes`);
     sendAudioToServer(audioBlob);
     
-    // Xóa các audio chunks đã gửi
+    // Xóa các audio chunks đã gửi để chuẩn bị cho câu tiếp theo
     audioChunksRef.current = [];
   };
 };

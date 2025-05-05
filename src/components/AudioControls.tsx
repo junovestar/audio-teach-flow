@@ -34,11 +34,11 @@ const AudioControls: React.FC<AudioControlsProps> = ({
       >
         {isRecording ? (
           <>
-            <Square className="mr-2 h-4 w-4" /> Dừng ghi âm
+            <Square className="mr-2 h-4 w-4" /> Dừng ghi âm realtime
           </>
         ) : (
           <>
-            <Mic className="mr-2 h-4 w-4" /> Ghi âm
+            <Mic className="mr-2 h-4 w-4" /> Ghi âm realtime
           </>
         )}
       </Button>
