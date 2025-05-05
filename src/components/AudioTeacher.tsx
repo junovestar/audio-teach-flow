@@ -26,7 +26,6 @@ const AudioTeacher: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [logs, setLogs] = useState<{ time: string; message: string }[]>([]);
-  const [wasRecording, setWasRecording] = useState(false); // Lưu trạng thái ghi âm trước khi tạm dừng
   
   // References
   const wsRef = useRef<WebSocket | null>(null);
@@ -38,6 +37,7 @@ const AudioTeacher: React.FC = () => {
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const sentRequestIdsRef = useRef<Set<string>>(new Set()); // Lưu trữ các requestId đã gửi
+  const isRestartingRecorderRef = useRef<boolean>(false); // Theo dõi trạng thái đang restart recorder
   
   // Hàm thêm log
   const addLog = (message: string) => {
@@ -60,12 +60,72 @@ const AudioTeacher: React.FC = () => {
     sendAudioToServer
   );
   
+  // Xử lý khi phát hiện kết thúc câu - Restart recorder
+  const restartRecorderAfterSentence = async () => {
+    if (isRestartingRecorderRef.current || !isRecording) return;
+    
+    isRestartingRecorderRef.current = true;
+    addLog('Khởi động lại recorder sau khi phát hiện kết thúc câu');
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      // Dừng recorder hiện tại nếu đang hoạt động
+      mediaRecorderRef.current.stop();
+      // Chờ một chút để đảm bảo dữ liệu được xử lý xong
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    
+    // Khởi động lại recorder với stream hiện có
+    if (streamRef.current) {
+      try {
+        // Xóa audio chunks cũ
+        audioChunksRef.current = [];
+        
+        // Tạo recorder mới nếu stream vẫn có sẵn
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+          ? 'audio/webm;codecs=opus' 
+          : '';
+        
+        const options: MediaRecorderOptions = { 
+          audioBitsPerSecond: 128000 
+        };
+        
+        if (mimeType) {
+          options.mimeType = mimeType;
+        }
+        
+        mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
+        
+        // Cài đặt xử lý dữ liệu âm thanh
+        mediaRecorderRef.current.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+            addLog(`Đã thu thập đoạn âm thanh: ${event.data.size} bytes - Type: ${event.data.type}`);
+          }
+        };
+        
+        // Khởi động lại ghi âm
+        mediaRecorderRef.current.start(500);
+        addLog('Đã khởi động lại recorder thành công');
+        
+      } catch (error) {
+        if (error instanceof Error) {
+          addLog('Lỗi khởi động lại recorder: ' + error.message);
+        }
+      }
+    } else {
+      addLog('Không thể khởi động lại recorder: Stream không khả dụng');
+    }
+    
+    isRestartingRecorderRef.current = false;
+  };
+  
   // Hook phát hiện im lặng
   const { silenceDetectionRef, startVolumeDetection } = useSilenceDetection(
     isRecording,
     analyserRef,
     sendCollectedAudio,
-    addLog
+    addLog,
+    restartRecorderAfterSentence // Thêm callback khi phát hiện kết thúc câu
   );
   
   // Hook trực quan hóa âm thanh
@@ -81,20 +141,16 @@ const AudioTeacher: React.FC = () => {
   const pauseRecording = () => {
     if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.pause();
-      setWasRecording(true);
       addLog('Tạm dừng ghi âm vì đang phát âm thanh từ giáo viên');
     }
   };
 
   // Tiếp tục ghi âm sau khi kết thúc âm thanh
-  const resumeRecording = () => {
-    if (wasRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
-      mediaRecorderRef.current.resume();
-      setWasRecording(false);
-      addLog('Tiếp tục ghi âm sau khi phát âm thanh');
-      
-      // Xóa các audio chunks cũ khi tiếp tục ghi âm
-      audioChunksRef.current = [];
+  const resumeRecording = async () => {
+    if (isRecording) {
+      // Thay vì tiếp tục ghi âm cũ, hãy khởi động lại recorder
+      addLog('Tiếp tục ghi âm sau khi phát âm thanh bằng cách khởi động lại recorder');
+      await restartRecorderAfterSentence();
     }
   };
   
@@ -131,7 +187,7 @@ const AudioTeacher: React.FC = () => {
         
         // Nếu phản hồi có dữ liệu âm thanh
         if (response.type === 'audio' && response.data) {
-          addLog(`Nhận dữ liệu âm thanh từ server: format=${response.format || 'mp3'}`);
+          addLog(`Nhận dữ liệu âm thanh từ server: format=${response.format || 'mp3'}, size=${response.data.length} chars`);
           
           // Tạm dừng ghi âm trước khi phát
           pauseRecording();
@@ -205,10 +261,12 @@ const AudioTeacher: React.FC = () => {
       // Reset danh sách requestId đã gửi
       sentRequestIdsRef.current.clear();
       
+      // Đặt lại trạng thái đang restart
+      isRestartingRecorderRef.current = false;
+      
       // Bắt đầu ghi âm với khoảng thời gian ngắn cho việc truyền realtime
       mediaRecorderRef.current.start(500); // Thu âm mỗi 500ms
       setIsRecording(true);
-      setWasRecording(false);
       addLog('Bắt đầu ghi âm realtime với phát hiện câu nói tự động');
     }
   };
@@ -218,7 +276,6 @@ const AudioTeacher: React.FC = () => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      setWasRecording(false);
       addLog('Dừng ghi âm realtime');
       
       // Gửi các đoạn âm thanh còn lại nếu có
@@ -226,6 +283,14 @@ const AudioTeacher: React.FC = () => {
         sendCollectedAudio();
         // Đảm bảo xóa chunks sau khi gửi
         audioChunksRef.current = [];
+      }
+      
+      // Dừng tất cả các track audio
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => {
+          track.stop();
+          addLog('Đã dừng audio track');
+        });
       }
     }
   };
@@ -257,6 +322,33 @@ const AudioTeacher: React.FC = () => {
       }
     };
   }, []);
+
+  // Thêm heartbeat để giữ kết nối WebSocket
+  useEffect(() => {
+    let heartbeatInterval: number | null = null;
+    
+    if (isConnected && wsRef.current) {
+      // Gửi heartbeat mỗi 30 giây
+      heartbeatInterval = window.setInterval(() => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          try {
+            wsRef.current.send(JSON.stringify({ type: 'heartbeat', timestamp: new Date().toISOString() }));
+            addLog('Đã gửi heartbeat để giữ kết nối');
+          } catch (error) {
+            if (error instanceof Error) {
+              addLog('Lỗi gửi heartbeat: ' + error.message);
+            }
+          }
+        }
+      }, 30000);
+    }
+    
+    return () => {
+      if (heartbeatInterval !== null) {
+        clearInterval(heartbeatInterval);
+      }
+    };
+  }, [isConnected]);
 
   return (
     <Card className="w-full max-w-3xl mx-auto shadow-lg">

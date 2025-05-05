@@ -20,6 +20,15 @@ export const playAudioFromBlob = (
     // Ghi log thông tin về blob để debug
     addLog(`Xử lý audio blob: type=${audioBlob.type || 'unknown'}, size=${audioBlob.size} bytes`);
     
+    // Kiểm tra kích thước blob
+    if (audioBlob.size <= 0) {
+      addLog('Cảnh báo: Blob âm thanh có kích thước 0, không thể phát');
+      if (onPlaybackEnd) {
+        onPlaybackEnd();
+      }
+      return;
+    }
+    
     // Nếu không có MIME type hoặc không hợp lệ, thử dùng audio/mpeg
     let processedBlob = audioBlob;
     if (!audioBlob.type || audioBlob.type === 'unknown') {
@@ -56,11 +65,39 @@ export const playAudioFromBlob = (
       const errorMsg = error.message || audioPlayerRef.current?.error?.message || 'Không rõ lỗi';
       addLog(`Lỗi phát âm thanh: ${errorMsg}`);
       
+      // Giải phóng URL trước khi thử lại
+      URL.revokeObjectURL(audioUrl);
+      
       // Có thể thử lại với một MIME type khác
       if (processedBlob.type !== 'audio/mpeg' && processedBlob.type !== audioBlob.type) {
         addLog('Thử lại phát âm thanh với MIME type khác: audio/mpeg');
-        playAudioFromBlob(new Blob([audioBlob], { type: 'audio/mpeg' }), 
-                          audioPlayerRef, setIsPlaying, addLog, onPlaybackEnd);
+        const mpegBlob = new Blob([audioBlob], { type: 'audio/mpeg' });
+        const newAudioUrl = URL.createObjectURL(mpegBlob);
+        
+        // Tạo player mới để tránh các vấn đề với player cũ
+        const newPlayer = new Audio(newAudioUrl);
+        newPlayer.onplay = () => {
+          setIsPlaying(true);
+          addLog('Đang phát âm thanh với MIME type mới (audio/mpeg)');
+        };
+        newPlayer.onended = () => {
+          setIsPlaying(false);
+          addLog('Kết thúc phát âm thanh (MIME type mới)');
+          URL.revokeObjectURL(newAudioUrl);
+          if (onPlaybackEnd) onPlaybackEnd();
+        };
+        newPlayer.onerror = () => {
+          setIsPlaying(false);
+          addLog('Vẫn không thể phát âm thanh sau khi thử MIME type khác');
+          URL.revokeObjectURL(newAudioUrl);
+          if (onPlaybackEnd) onPlaybackEnd();
+        };
+        
+        audioPlayerRef.current = newPlayer;
+        newPlayer.play().catch(finalErr => {
+          addLog(`Lỗi cuối cùng: ${finalErr.message}`);
+          if (onPlaybackEnd) onPlaybackEnd();
+        });
         return;
       }
       
@@ -73,12 +110,21 @@ export const playAudioFromBlob = (
     audioPlayerRef.current.play().catch(error => {
       if (error instanceof Error) {
         addLog('Lỗi phát âm thanh: ' + error.message);
+        URL.revokeObjectURL(audioUrl); // Giải phóng bộ nhớ
         
         // Thử phát lại với một MIME type khác
         if (processedBlob.type !== 'audio/mpeg') {
           addLog('Thử lại phát âm thanh với MIME type: audio/mpeg');
           const mpegBlob = new Blob([audioBlob], { type: 'audio/mpeg' });
-          playAudioFromBlob(mpegBlob, audioPlayerRef, setIsPlaying, addLog, onPlaybackEnd);
+          const newAudioUrl = URL.createObjectURL(mpegBlob);
+          
+          // Cập nhật player hiện tại
+          audioPlayerRef.current!.src = newAudioUrl;
+          audioPlayerRef.current!.play().catch(err => {
+            addLog('Vẫn không thể phát âm thanh: ' + err.message);
+            URL.revokeObjectURL(newAudioUrl);
+            if (onPlaybackEnd) onPlaybackEnd();
+          });
           return;
         }
         
@@ -138,6 +184,14 @@ export const setupAudioRecording = async (
       addLog('Cảnh báo: Không có định dạng webm nào được hỗ trợ. Sử dụng định dạng mặc định.');
     }
     
+    // Nếu đã có stream, hãy dừng các track trước
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+        addLog('Đã dừng track âm thanh cũ');
+      });
+    }
+    
     // Yêu cầu quyền truy cập microphone với giá trị echoCancellation
     const stream = await navigator.mediaDevices.getUserMedia({ 
       audio: {
@@ -150,6 +204,16 @@ export const setupAudioRecording = async (
     streamRef.current = stream;
     
     // Set up audio context và analyser
+    // Nếu đã tồn tại một audioContext, hãy đóng nó trước
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      try {
+        await audioContextRef.current.close();
+        addLog('Đã đóng AudioContext cũ');
+      } catch (err) {
+        addLog('Lỗi khi đóng AudioContext cũ: ' + (err instanceof Error ? err.message : 'Không rõ lỗi'));
+      }
+    }
+    
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     audioContextRef.current = audioContext;
     
@@ -217,17 +281,27 @@ export const createSendCollectedAudio = (
   sendAudioToServer: (audioBlob: Blob) => void
 ) => {
   return () => {
-    if (audioChunksRef.current.length === 0) return;
+    if (audioChunksRef.current.length === 0) {
+      addLog('Không có đoạn âm thanh nào để gửi');
+      return;
+    }
     
     // Tạo blob từ các phần audio đã thu thập
     const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
     addLog(`Chuẩn bị gửi câu nói đã thu thập: ${audioBlob.size} bytes`);
+    
+    if (audioBlob.size <= 0) {
+      addLog('Không gửi vì kích thước blob = 0');
+      audioChunksRef.current = [];
+      return;
+    }
     
     // Gửi audio đến server
     sendAudioToServer(audioBlob);
     
     // Xóa các audio chunks đã gửi để chuẩn bị cho câu tiếp theo
     // Đảm bảo xóa hết dữ liệu cũ trước khi thu thập mới
+    addLog('Đã xóa audio chunks cũ sau khi gửi');
     audioChunksRef.current = [];
   };
 };

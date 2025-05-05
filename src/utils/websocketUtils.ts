@@ -1,7 +1,7 @@
 
 import { toast } from "@/hooks/use-toast";
 
-// Create a WebSocket connection
+// Create a WebSocket connection with auto-reconnect ability
 export const connectWebSocket = (
   wsRef: React.MutableRefObject<WebSocket | null>,
   setIsConnected: React.Dispatch<React.SetStateAction<boolean>>,
@@ -10,12 +10,16 @@ export const connectWebSocket = (
   handleWebSocketMessage: (event: MessageEvent) => void
 ) => {
   try {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      addLog('WebSocket đã được kết nối');
-      return;
+    // Close existing connection if open
+    if (wsRef.current) {
+      if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+        wsRef.current.close();
+        addLog('Đóng kết nối WebSocket cũ để tạo kết nối mới');
+      }
     }
     
     wsRef.current = new WebSocket('wss://ws.thanhpn.online:3001');
+    addLog('Đang thử kết nối đến WebSocket server...');
     
     wsRef.current.onopen = () => {
       setIsConnected(true);
@@ -26,21 +30,27 @@ export const connectWebSocket = (
       });
     };
     
-    wsRef.current.onclose = () => {
+    wsRef.current.onclose = (event) => {
       setIsConnected(false);
       setIsRecording(false);
-      addLog('Mất kết nối với WebSocket server');
+      addLog(`Mất kết nối với WebSocket server (Code: ${event.code})`);
       toast({
         title: "Mất kết nối",
         description: "Mất kết nối với WebSocket server",
         variant: "destructive",
       });
+      
+      // Auto reconnect after 3 seconds
+      setTimeout(() => {
+        addLog('Đang thử kết nối lại tự động...');
+        connectWebSocket(wsRef, setIsConnected, setIsRecording, addLog, handleWebSocketMessage);
+      }, 3000);
     };
     
     wsRef.current.onmessage = handleWebSocketMessage;
     
-    wsRef.current.onerror = () => {
-      addLog('Lỗi WebSocket');
+    wsRef.current.onerror = (error) => {
+      addLog('Lỗi WebSocket: ' + JSON.stringify(error));
       toast({
         title: "Lỗi kết nối",
         description: "Không thể kết nối đến server",
@@ -65,6 +75,9 @@ export const createSendAudioToServer = (
       reader.onload = () => {
         if (reader.result && typeof reader.result === 'string') {
           const base64Audio = reader.result.split(',')[1];
+          
+          // Thêm thông tin về MIME type của blob để debug
+          addLog(`Gửi audio với MIME type: ${audioBlob.type}, kích thước: ${audioBlob.size} bytes`);
           
           const message = {
             type: 'audio',
@@ -97,7 +110,8 @@ export const createSendAudioToServer = (
       
       reader.readAsDataURL(audioBlob);
     } else {
-      addLog('Không thể gửi âm thanh: WebSocket không được kết nối');
+      const state = wsRef.current ? wsRef.current.readyState : 'null';
+      addLog(`Không thể gửi âm thanh: WebSocket không được kết nối (state: ${state})`);
     }
   };
 };
@@ -138,6 +152,14 @@ export const playReceivedAudio = (
     const blob = new Blob(byteArrays, { type: mimeType });
     addLog(`Đã tạo audio blob với MIME type: ${mimeType}, kích thước: ${blob.size} bytes`);
     
+    if (blob.size <= 0) {
+      addLog('Cảnh báo: Blob âm thanh có kích thước 0, không thể phát');
+      if (onPlaybackEnd) {
+        onPlaybackEnd();
+      }
+      return;
+    }
+    
     const audioUrl = URL.createObjectURL(blob);
     
     // Create or use existing audio element
@@ -163,7 +185,22 @@ export const playReceivedAudio = (
     audioPlayerRef.current.onerror = (e) => {
       const error = e as ErrorEvent;
       setIsPlaying(false);
-      addLog(`Lỗi phát âm thanh: ${error.message || 'Không rõ lỗi'}`);
+      addLog(`Lỗi phát âm thanh: ${error.message || (audioPlayerRef.current?.error?.message) || 'Không rõ lỗi'}`);
+      URL.revokeObjectURL(audioUrl);
+      
+      // Thử lại với MIME type khác
+      if (mimeType !== 'audio/mpeg') {
+        addLog('Thử lại với MIME type audio/mpeg');
+        const mpegBlob = new Blob(byteArrays, { type: 'audio/mpeg' });
+        const newAudioUrl = URL.createObjectURL(mpegBlob);
+        audioPlayerRef.current!.src = newAudioUrl;
+        audioPlayerRef.current!.play().catch(err => {
+          addLog('Vẫn không thể phát âm thanh: ' + err.message);
+          URL.revokeObjectURL(newAudioUrl);
+          if (onPlaybackEnd) onPlaybackEnd();
+        });
+        return;
+      }
       
       // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
       if (onPlaybackEnd) {
@@ -174,6 +211,20 @@ export const playReceivedAudio = (
     audioPlayerRef.current.play().catch(error => {
       if (error instanceof Error) {
         addLog('Lỗi phát âm thanh: ' + error.message);
+        
+        // Thử lại với MIME type khác
+        if (mimeType !== 'audio/mpeg') {
+          addLog('Thử lại với MIME type audio/mpeg');
+          const mpegBlob = new Blob(byteArrays, { type: 'audio/mpeg' });
+          const newAudioUrl = URL.createObjectURL(mpegBlob);
+          audioPlayerRef.current!.src = newAudioUrl;
+          audioPlayerRef.current!.play().catch(err => {
+            addLog('Vẫn không thể phát âm thanh: ' + err.message);
+            URL.revokeObjectURL(newAudioUrl);
+            if (onPlaybackEnd) onPlaybackEnd();
+          });
+          return;
+        }
         
         // Trong trường hợp lỗi, cũng gọi callback để đảm bảo quay lại ghi âm
         if (onPlaybackEnd) {

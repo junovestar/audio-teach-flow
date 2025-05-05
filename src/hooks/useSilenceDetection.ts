@@ -12,7 +12,8 @@ export function useSilenceDetection(
   isRecording: boolean,
   analyserRef: React.RefObject<AnalyserNode | null>,
   sendCollectedAudio: () => void,
-  addLog: (message: string) => void
+  addLog: (message: string) => void,
+  onSentenceDetected?: () => void // Thêm callback mới khi phát hiện kết thúc câu
 ) {
   const silenceDetectionRef = useRef<SilenceDetection>({
     lastVolume: 0,
@@ -72,6 +73,11 @@ export function useSilenceDetection(
           
           // Reset silenceStart để sẵn sàng cho câu tiếp theo
           silenceDetectionRef.current.silenceStart = null;
+          
+          // Gọi callback khi phát hiện kết thúc câu
+          if (onSentenceDetected) {
+            onSentenceDetected();
+          }
         }
       } 
       // Nếu tiếp tục nói, đặt lại thời gian im lặng
