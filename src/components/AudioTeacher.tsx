@@ -37,6 +37,7 @@ const AudioTeacher: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const sentRequestIdsRef = useRef<Set<string>>(new Set()); // Lưu trữ các requestId đã gửi
   
   // Hàm thêm log
   const addLog = (message: string) => {
@@ -91,6 +92,9 @@ const AudioTeacher: React.FC = () => {
       mediaRecorderRef.current.resume();
       setWasRecording(false);
       addLog('Tiếp tục ghi âm sau khi phát âm thanh');
+      
+      // Xóa các audio chunks cũ khi tiếp tục ghi âm
+      audioChunksRef.current = [];
     }
   };
   
@@ -122,6 +126,12 @@ const AudioTeacher: React.FC = () => {
           // Tạm dừng ghi âm trước khi phát
           pauseRecording();
           playReceivedAudio(response.data, response.format || 'mp3', audioPlayerRef, setIsPlaying, addLog, resumeRecording);
+          
+          // Nếu có requestId, đánh dấu đã nhận phản hồi
+          if (response.requestId && sentRequestIdsRef.current.has(response.requestId)) {
+            sentRequestIdsRef.current.delete(response.requestId);
+            addLog(`Đã xử lý phản hồi cho requestId: ${response.requestId}`);
+          }
         }
       } catch (parseError) {
         if (parseError instanceof Error) {
@@ -182,6 +192,9 @@ const AudioTeacher: React.FC = () => {
         sentenceDetected: false
       };
       
+      // Reset danh sách requestId đã gửi
+      sentRequestIdsRef.current.clear();
+      
       // Bắt đầu ghi âm với khoảng thời gian ngắn cho việc truyền realtime
       mediaRecorderRef.current.start(500); // Thu âm mỗi 500ms
       setIsRecording(true);
@@ -201,6 +214,8 @@ const AudioTeacher: React.FC = () => {
       // Gửi các đoạn âm thanh còn lại nếu có
       if (audioChunksRef.current.length > 0) {
         sendCollectedAudio();
+        // Đảm bảo xóa chunks sau khi gửi
+        audioChunksRef.current = [];
       }
     }
   };
@@ -242,7 +257,7 @@ const AudioTeacher: React.FC = () => {
       </CardHeader>
       
       <CardContent className="p-6">
-        {/* Connection Status */}
+        {/* Status Indicators */}
         <StatusIndicators 
           isConnected={isConnected}
           isRecording={isRecording}

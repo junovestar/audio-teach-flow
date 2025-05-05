@@ -71,13 +71,14 @@ export const createSendAudioToServer = (
             data: base64Audio,
             format: 'webm', // Định dạng âm thanh của browser
             timestamp: new Date().toISOString(),
-            expectResponseFormat: 'mp3' // Yêu cầu phản hồi dạng MP3
+            expectResponseFormat: 'mp3', // Yêu cầu phản hồi dạng MP3
+            requestId: crypto.randomUUID() // Thêm requestId để theo dõi yêu cầu
           };
           
           try {
             const jsonString = JSON.stringify(message);
             wsRef.current?.send(jsonString);
-            addLog(`Đã gửi dữ liệu âm thanh (${base64Audio.length} ký tự)`);
+            addLog(`Đã gửi dữ liệu âm thanh (${base64Audio.length} ký tự) với requestId: ${message.requestId}`);
           } catch (error) {
             if (error instanceof Error) {
               addLog('Lỗi khi gửi âm thanh: ' + error.message);

@@ -190,9 +190,12 @@ export const createSendCollectedAudio = (
     // Tạo blob từ các phần audio đã thu thập
     const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
     addLog(`Chuẩn bị gửi câu nói đã thu thập: ${audioBlob.size} bytes`);
+    
+    // Gửi audio đến server
     sendAudioToServer(audioBlob);
     
     // Xóa các audio chunks đã gửi để chuẩn bị cho câu tiếp theo
+    // Đảm bảo xóa hết dữ liệu cũ trước khi thu thập mới
     audioChunksRef.current = [];
   };
 };

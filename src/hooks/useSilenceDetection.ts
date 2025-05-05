@@ -69,6 +69,9 @@ export function useSilenceDetection(
           
           // Gửi các đoạn âm thanh đã thu thập
           sendCollectedAudio();
+          
+          // Reset silenceStart để sẵn sàng cho câu tiếp theo
+          silenceDetectionRef.current.silenceStart = null;
         }
       } 
       // Nếu tiếp tục nói, đặt lại thời gian im lặng
@@ -79,7 +82,9 @@ export function useSilenceDetection(
       silenceDetectionRef.current.lastVolume = avgVolume;
       
       // Tiếp tục kiểm tra - realtime liên tục
-      requestAnimationFrame(checkVolume);
+      if (isRecording) {
+        requestAnimationFrame(checkVolume);
+      }
     };
     
     checkVolume();
