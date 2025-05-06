@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import AudioVisualizer from './AudioVisualizer';
 import StatusIndicators from './StatusIndicators';
 import AudioControls from './AudioControls';
-import LogDisplay from './LogDisplay';
 import { useSilenceDetection } from '@/hooks/useSilenceDetection';
 import { useAudioVisualization } from '@/hooks/useAudioVisualization';
 import { 
@@ -25,7 +24,7 @@ const AudioTeacher: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [logs, setLogs] = useState<{ time: string; message: string }[]>([]);
+  const [isWaitingResponse, setIsWaitingResponse] = useState(false);
   
   // References
   const wsRef = useRef<WebSocket | null>(null);
@@ -39,15 +38,9 @@ const AudioTeacher: React.FC = () => {
   const sentRequestIdsRef = useRef<Set<string>>(new Set()); // Lưu trữ các requestId đã gửi
   const isRestartingRecorderRef = useRef<boolean>(false); // Theo dõi trạng thái đang restart recorder
   
-  // Hàm thêm log
+  // Hàm thêm log (hidden from UI now)
   const addLog = (message: string) => {
-    const now = new Date();
-    const timestamp = now.toLocaleTimeString();
-    setLogs(prevLogs => [{
-      time: timestamp,
-      message
-    }, ...prevLogs].slice(0, 100)); // Giữ 100 logs mới nhất
-    console.log(`[${timestamp}] ${message}`);
+    console.log(`[${new Date().toLocaleTimeString()}] ${message}`);
   };
   
   // Tạo hàm gửi âm thanh đến server
@@ -57,7 +50,10 @@ const AudioTeacher: React.FC = () => {
   const sendCollectedAudio = createSendCollectedAudio(
     audioChunksRef, 
     addLog, 
-    sendAudioToServer
+    sendAudioToServer,
+    () => {
+      setIsWaitingResponse(true);
+    }
   );
   
   // Xử lý khi phát hiện kết thúc câu - Restart recorder
@@ -103,9 +99,11 @@ const AudioTeacher: React.FC = () => {
           }
         };
         
-        // Khởi động lại ghi âm
-        mediaRecorderRef.current.start(500);
-        addLog('Đã khởi động lại recorder thành công');
+        // Khởi động lại ghi âm - chỉ khi không chờ phản hồi từ giáo viên
+        if (!isWaitingResponse) {
+          mediaRecorderRef.current.start(500);
+          addLog('Đã khởi động lại recorder thành công');
+        }
         
       } catch (error) {
         if (error instanceof Error) {
@@ -147,6 +145,11 @@ const AudioTeacher: React.FC = () => {
 
   // Tiếp tục ghi âm sau khi kết thúc âm thanh
   const resumeRecording = async () => {
+    setIsWaitingResponse(false);
+    
+    // Chờ một khoảng thời gian ngắn trước khi khởi động lại ghi âm
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
     if (isRecording) {
       // Thay vì tiếp tục ghi âm cũ, hãy khởi động lại recorder
       addLog('Tiếp tục ghi âm sau khi phát âm thanh bằng cách khởi động lại recorder');
@@ -159,7 +162,6 @@ const AudioTeacher: React.FC = () => {
     try {
       addLog('Nhận phản hồi từ server');
       const data = event.data;
-      console.log('Response type:', typeof data);
       
       // Kiểm tra nếu dữ liệu là Blob
       if (data instanceof Blob) {
@@ -183,11 +185,10 @@ const AudioTeacher: React.FC = () => {
       // Xử lý dữ liệu là string (JSON)
       try {
         const response = JSON.parse(data);
-        console.log('Parsed response:', response);
         
         // Nếu phản hồi có dữ liệu âm thanh
         if (response.type === 'audio' && response.data) {
-          addLog(`Nhận dữ liệu âm thanh từ server: format=${response.format || 'mp3'}, size=${response.data.length} chars`);
+          addLog(`Nhận dữ liệu âm thanh từ server: format=${response.format || 'mp3'}`);
           
           // Tạm dừng ghi âm trước khi phát
           pauseRecording();
@@ -196,13 +197,11 @@ const AudioTeacher: React.FC = () => {
           // Nếu có requestId, đánh dấu đã nhận phản hồi
           if (response.requestId && sentRequestIdsRef.current.has(response.requestId)) {
             sentRequestIdsRef.current.delete(response.requestId);
-            addLog(`Đã xử lý phản hồi cho requestId: ${response.requestId}`);
           }
         }
       } catch (parseError) {
         if (parseError instanceof Error) {
-          addLog('Dữ liệu không phải JSON, xử lý như văn bản: ' + parseError.message);
-          console.log('Text response:', data);
+          addLog('Dữ liệu không phải JSON: ' + parseError.message);
         }
       }
     } catch (error) {
@@ -228,7 +227,7 @@ const AudioTeacher: React.FC = () => {
     if (!isConnected) {
       toast({
         title: "Chưa kết nối",
-        description: "Vui lòng kết nối đến server trước",
+        description: "Vui lòng kết nối đến giáo viên trước",
         variant: "destructive",
       });
       return;
@@ -261,13 +260,19 @@ const AudioTeacher: React.FC = () => {
       // Reset danh sách requestId đã gửi
       sentRequestIdsRef.current.clear();
       
-      // Đặt lại trạng thái đang restart
+      // Đặt lại trạng thái đang restart và đang chờ
       isRestartingRecorderRef.current = false;
+      setIsWaitingResponse(false);
       
       // Bắt đầu ghi âm với khoảng thời gian ngắn cho việc truyền realtime
       mediaRecorderRef.current.start(500); // Thu âm mỗi 500ms
       setIsRecording(true);
       addLog('Bắt đầu ghi âm realtime với phát hiện câu nói tự động');
+      
+      toast({
+        title: "Bắt đầu nói",
+        description: "Hãy nói bằng tiếng Anh, giáo viên sẽ lắng nghe và phản hồi",
+      });
     }
   };
 
@@ -352,9 +357,9 @@ const AudioTeacher: React.FC = () => {
 
   return (
     <Card className="w-full max-w-3xl mx-auto shadow-lg">
-      <CardHeader className="bg-gradient-to-r from-teacher-primary to-teacher-secondary text-white">
+      <CardHeader className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
         <CardTitle className="text-center text-2xl font-bold">
-          Audio Teaching Flow
+          English Speaking Practice
         </CardTitle>
       </CardHeader>
       
@@ -365,21 +370,35 @@ const AudioTeacher: React.FC = () => {
           isRecording={isRecording}
           isPlaying={isPlaying}
           isSpeaking={silenceDetectionRef.current?.speaking || false}
+          isWaitingResponse={isWaitingResponse}
         />
         
         {/* Controls */}
         <AudioControls
           isConnected={isConnected}
           isRecording={isRecording}
+          isWaitingResponse={isWaitingResponse}
           connectWebSocket={handleConnectWebSocket}
           toggleRecording={toggleRecording}
         />
         
         {/* Audio Visualization */}
-        <AudioVisualizer canvasRef={canvasRef} />
+        <div className="mb-6">
+          <h3 className="text-center text-gray-700 mb-2 font-medium">Voice Activity</h3>
+          <AudioVisualizer canvasRef={canvasRef} />
+        </div>
         
-        {/* Logs */}
-        <LogDisplay logs={logs} />
+        {/* Instruction Panel */}
+        <div className="mt-8 bg-blue-50 p-4 rounded-lg border border-blue-100">
+          <h3 className="font-medium text-blue-800 mb-2">Hướng dẫn sử dụng:</h3>
+          <ul className="text-sm text-blue-700 space-y-1 list-disc pl-5">
+            <li>Nhấn nút "Bắt đầu nói" và nói câu tiếng Anh của bạn</li>
+            <li>Khi bạn ngừng nói, hệ thống sẽ tự gửi câu nói đến giáo viên AI</li>
+            <li>Chờ giáo viên AI phản hồi và sửa lỗi cho bạn</li>
+            <li>Sau khi nghe xong, bạn có thể tiếp tục nói câu tiếp theo</li>
+            <li>Nhấn "Dừng nói" khi bạn muốn kết thúc buổi học</li>
+          </ul>
+        </div>
       </CardContent>
     </Card>
   );

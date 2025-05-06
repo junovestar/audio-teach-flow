@@ -13,7 +13,7 @@ export function useSilenceDetection(
   analyserRef: React.RefObject<AnalyserNode | null>,
   sendCollectedAudio: () => void,
   addLog: (message: string) => void,
-  onSentenceDetected?: () => void // Thêm callback mới khi phát hiện kết thúc câu
+  onSentenceDetected?: () => void
 ) {
   const silenceDetectionRef = useRef<SilenceDetection>({
     lastVolume: 0,
@@ -55,7 +55,6 @@ export function useSilenceDetection(
         silenceDetectionRef.current.speaking = true;
         silenceDetectionRef.current.silenceStart = null;
         silenceDetectionRef.current.sentenceDetected = false;
-        addLog('Bắt đầu phát hiện giọng nói');
       } 
       // Phát hiện khi người dùng ngừng nói
       else if (avgVolume <= silenceThreshold && silenceDetectionRef.current.speaking) {
@@ -66,7 +65,6 @@ export function useSilenceDetection(
         else if (now - silenceDetectionRef.current.silenceStart > silenceTime) {
           silenceDetectionRef.current.speaking = false;
           silenceDetectionRef.current.sentenceDetected = true;
-          addLog('Phát hiện kết thúc câu nói');
           
           // Gửi các đoạn âm thanh đã thu thập
           sendCollectedAudio();
@@ -101,10 +99,6 @@ export function useSilenceDetection(
     if (isRecording) {
       startVolumeDetection();
     }
-    
-    return () => {
-      // Không cần dọn dẹp, sẽ tự kết thúc khi isRecording = false
-    };
   }, [isRecording]);
 
   return { silenceDetectionRef, startVolumeDetection };

@@ -278,7 +278,8 @@ export const createProcessSpeechChunk = (
 export const createSendCollectedAudio = (
   audioChunksRef: React.MutableRefObject<Blob[]>,
   addLog: (message: string) => void,
-  sendAudioToServer: (audioBlob: Blob) => void
+  sendAudioToServer: (audioBlob: Blob) => void,
+  onSendStart?: () => void
 ) => {
   return () => {
     if (audioChunksRef.current.length === 0) {
@@ -296,11 +297,15 @@ export const createSendCollectedAudio = (
       return;
     }
     
+    // Kích hoạt callback khi bắt đầu gửi
+    if (onSendStart) {
+      onSendStart();
+    }
+    
     // Gửi audio đến server
     sendAudioToServer(audioBlob);
     
     // Xóa các audio chunks đã gửi để chuẩn bị cho câu tiếp theo
-    // Đảm bảo xóa hết dữ liệu cũ trước khi thu thập mới
     addLog('Đã xóa audio chunks cũ sau khi gửi');
     audioChunksRef.current = [];
   };
